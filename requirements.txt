@@ -1,0 +1,12 @@
+# Base requirements
+pygame>=2.0
+numpy>=1.19
+
+# Optional: PyTorch for the PyTorch backend (not required)
+# Installing torch may be large and platform-dependent. For Windows CPU-only, a recommended command:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+# For GPU/CUDA or other combinations follow the official selector:
+#   https://pytorch.org/get-started/locally/
+# If you prefer a simple pip requirement (may not work on all platforms), you can try:
+#   pip install "torch>=1.13.0"
+# Note: torch is OPTIONAL. If not installed, the application will fall back to the numpy backend.
