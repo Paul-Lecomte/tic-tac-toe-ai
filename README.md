@@ -22,8 +22,3 @@ Controls in the GUI
 - N: switch AI to NeuralNet
 - T: train the NeuralNet quickly (generates dataset vs Minimax and trains for a short time)
 - Q: quit
-
-Notes
-- The NN used is a lightweight numpy implementation and is intended for visualization and learning, not production performance.
-- If you prefer, you can implement a PyTorch version (optional). The code will fall back to numpy if PyTorch is not installed.
-
