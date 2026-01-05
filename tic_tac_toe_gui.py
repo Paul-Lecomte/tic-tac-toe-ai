@@ -21,10 +21,8 @@ Controls:
 
 """
 
-import sys
 import time
 import random
-import math
 
 try:
     import pygame
@@ -46,10 +44,10 @@ try:
 except Exception:
     USE_TORCH = False
 
-# Game constants
-WIDTH, HEIGHT = 800, 520
+# Game constants (limit window to 720p and make NN viz compact)
+WIDTH, HEIGHT = 1280, 720
 BOARD_SIZE = 360
-MARGIN = 20
+MARGIN = 12
 CELL_SIZE = BOARD_SIZE // 3
 FPS = 60
 
@@ -233,16 +231,13 @@ if USE_TORCH:
 
         def forward(self, x):
             # Accept x as numpy array shape (9,) or (9,1)
-            import torch
             with torch.no_grad():
-                tx = torch.tensor(x.reshape(9,1).astype(np.float32), device=self.device)
-                activations = [tx.cpu().numpy()]
-                a = tx
-                linear_idx = 0
-                for i, module in enumerate(self.model):
-                    a = module(a)
-                    # capture activations after each linear (and ReLU)
-                    activations.append(a.cpu().numpy())
+                tx = torch.tensor(np.array(x).reshape(1,9).astype(np.float32), device=self.device)
+                activations = [tx.squeeze(0).unsqueeze(1).cpu().numpy()]  # (9,1)
+                a = tx  # shape (1,9)
+                for module in self.model:
+                    a = module(a)  # keep shape (1, features)
+                    activations.append(a.squeeze(0).unsqueeze(1).cpu().numpy())
                 return activations
 
         def predict(self, x):
@@ -252,7 +247,6 @@ if USE_TORCH:
 
         def train_supervised(self, X, Y, epochs=100, lr=0.01, batch=32):
             # X: (N,9) numpy, Y: (N,9) one-hot numpy
-            import torch
             X_t = torch.tensor(X.astype(np.float32), device=self.device)
             Y_idx = torch.tensor(np.argmax(Y, axis=1), dtype=torch.long, device=self.device)
             dataset = torch.utils.data.TensorDataset(X_t, Y_idx)
@@ -262,13 +256,8 @@ if USE_TORCH:
             for epoch in range(epochs):
                 running_loss = 0.0
                 for xb, yb in loader:
-                    xb = xb.to(self.device)
-                    # reshape to (batch, features) -> our model expects (features, 1) per sample
-                    # we'll transpose to (batch, features) and run linear layers accordingly
-                    # adjust input shape: (batch,9) -> (9, batch, 1) not necessary; use linear layers expecting (batch, in_features)
                     optimizer.zero_grad()
                     outputs = self.model(xb)
-                    # outputs shape: (batch, out_features)
                     loss = criterion(outputs, yb)
                     loss.backward()
                     optimizer.step()
@@ -330,8 +319,12 @@ class GameUI:
         pygame.display.set_caption('Tic-Tac-Toe AI (Minimax + NN Viz)')
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont('Arial', 18)
-        self.large_font = pygame.font.SysFont('Arial', 48, bold=True)
+        # fonts tuned smaller so UI fits in 720p
+        self.font = pygame.font.SysFont('Arial', 14)
+        # very small font for compact labels/titles
+        self.small_font = pygame.font.SysFont('Arial', 10)
+        # large font scaled down so X/O are not overwhelming
+        self.large_font = pygame.font.SysFont('Arial', max(36, int(CELL_SIZE * 0.45)), bold=True)
 
         self.board = [' '] * 9
         self.current = HUMAN
@@ -355,6 +348,10 @@ class GameUI:
         self.training = False
         self.last_activations = None
         self.last_logits = None
+        # Visualization animation state
+        self.prev_activations = None
+        self.viz_anim_start = 0.0
+        self.viz_anim_duration = 0.4  # seconds
 
     def switch_backend(self, backend):
         """Switch net backend to 'numpy' or 'torch' (if available)."""
@@ -386,71 +383,165 @@ class GameUI:
         self.winner = None
         self.winning_combo = None
         self.last_activations = None
+        self.prev_activations = None
         self.last_logits = None
+        self.viz_anim_start = 0.0
 
-    def draw_panel(self):
-        panel_rect = pygame.Rect(BOARD_SIZE + 2*MARGIN, MARGIN, WIDTH - BOARD_SIZE - 3*MARGIN, HEIGHT - 2*MARGIN)
-        pygame.draw.rect(self.screen, PANEL, panel_rect, border_radius=8)
+    def _draw_panel_header(self, panel_rect):
         # Status
         status = 'Tour: Vous (X)' if self.current == HUMAN and not self.is_game_over else ('IA pense...' if self.current==AI and not self.is_game_over else 'Fin')
         if self.is_game_over:
             if self.winner == 'draw': status = 'Match nul'
             elif self.winner == HUMAN: status = 'Vous avez gagné'
             else: status = 'IA a gagné'
+        title = self.font.render('Tic-Tac-Toe AI', True, WHITE)
+        self.screen.blit(title, (panel_rect.x + 16, panel_rect.y + 12))
         text = self.font.render(status, True, WHITE)
-        self.screen.blit(text, (BOARD_SIZE + 3*MARGIN, MARGIN + 8))
+        self.screen.blit(text, (panel_rect.x + 16, panel_rect.y + 36))
+        # Mode & backend rows as chips
+        chip_h = 24
+        chip_pad = 8
+        def draw_chip(text_s, x, y, color=(45,60,88)):
+            surf = self.font.render(text_s, True, WHITE)
+            rect = pygame.Rect(x, y, surf.get_width()+16, chip_h)
+            pygame.draw.rect(self.screen, color, rect, border_radius=12)
+            self.screen.blit(surf, (rect.x+8, rect.y+chip_h/2 - surf.get_height()/2))
+            return rect.right
+        right = draw_chip(f'Mode: {self.ai_mode} (M/N)', panel_rect.x + 16, panel_rect.y + 64)
+        draw_chip(f'Backend: {self.net_backend} (P)', right + chip_pad, panel_rect.y + 64)
 
-        # Mode
-        mode_text = self.font.render(f'AI mode: {self.ai_mode} (M/N to switch)', True, MUTED)
-        self.screen.blit(mode_text, (BOARD_SIZE + 3*MARGIN, MARGIN + 40))
+    def _ease(self, t):
+        # smooth cubic ease-in-out
+        t = max(0.0, min(1.0, t))
+        return 3*t*t - 2*t*t*t
 
-        # Backend info
-        backend_text = self.font.render(f'Backend: {self.net_backend} (P to toggle)', True, MUTED)
-        self.screen.blit(backend_text, (BOARD_SIZE + 3*MARGIN, MARGIN + 60))
+    def _interp_layers(self, prev, cur, alpha):
+        if prev is None or cur is None: return cur
+        out = []
+        for p, c in zip(prev, cur):
+            # ensure same shape
+            pv = np.array(p).reshape(-1)
+            cv = np.array(c).reshape(-1)
+            if pv.shape != cv.shape:
+                out.append(cv)
+            else:
+                out.append(pv*(1-alpha) + cv*alpha)
+        return [np.array(a) for a in out]
 
-        hint_text = self.font.render('R: reset   T: train NN   Q: quit', True, MUTED)
-        self.screen.blit(hint_text, (BOARD_SIZE + 3*MARGIN, HEIGHT - MARGIN - 30))
+    def _draw_probabilities(self, panel_rect):
+        if self.last_logits is None: return
+        logits = np.array(self.last_logits).reshape(-1)
+        exps = np.exp(logits - np.max(logits))
+        probs = (exps / np.sum(exps))
+        # Draw as grouped rows with bars (compact for 720p)
+        base_x = panel_rect.x + 10
+        # Position probabilities block starting below its title area (keep responsive)
+        base_y = panel_rect.y + 34
+        bar_w = panel_rect.width - 32
+        bar_h = 12
+        gap = 5
+        for i in range(9):
+            r = i // 3
+            c = i % 3
+            # use small font for probability labels to reduce clutter
+            label = self.small_font.render(f'Cell {r+1},{c+1}', True, MUTED)
+            y = base_y + i*(bar_h+gap)
+            self.screen.blit(label, (base_x, y))
+            # bar background
+            bar_rect = pygame.Rect(base_x + 90, y, bar_w - 120, bar_h)
+            pygame.draw.rect(self.screen, (32,48,72), bar_rect, border_radius=6)
+            # bar fill with gradient-like two-tone
+            p = float(probs[i])
+            fill_w = int((bar_rect.width) * p)
+            fill_rect = pygame.Rect(bar_rect.x, bar_rect.y, fill_w, bar_h)
+            color = (59,130,246) if self.board[i] == ' ' else (90,90,90)
+            pygame.draw.rect(self.screen, color, fill_rect, border_radius=6)
+            val = self.small_font.render(f'{p:.2f}', True, WHITE)
+            self.screen.blit(val, (bar_rect.right - val.get_width() - 6, y))
 
-        # If we have logits, show predicted move scores
-        if self.last_logits is not None:
-            logits = np.array(self.last_logits).reshape(-1)
-            # softmax
-            exps = np.exp(logits - np.max(logits))
-            probs = exps / np.sum(exps)
-            for i in range(9):
-                c = probs[i]
-                txt = self.font.render(f'{c:.2f}', True, WHITE)
-                # compute cell position
-                r = i // 3
-                col = i % 3
-                x = MARGIN + col*CELL_SIZE + (CELL_SIZE - txt.get_width())/2
-                y = HEIGHT - MARGIN - 100 + r*24
-                self.screen.blit(txt, (x, y))
+    def draw_panel(self):
+        panel_rect = pygame.Rect(BOARD_SIZE + 2*MARGIN, MARGIN, WIDTH - BOARD_SIZE - 3*MARGIN, HEIGHT - 2*MARGIN)
+        # panel background layers for subtle depth
+        pygame.draw.rect(self.screen, (8,12,18), panel_rect, border_radius=12)
+        inner = panel_rect.inflate(-8, -8)
+        pygame.draw.rect(self.screen, PANEL, inner, border_radius=12)
 
-        # Draw simple NN viz if activations exist
+        self._draw_panel_header(inner)
+
+        # Allocate more height to neural network activations and less to probabilities.
+        # Keep sensible clamps so the UI remains stable at 720p.
+        probs_h = max(90, int(inner.height * 0.22))
+        block_h = max(160, inner.height - probs_h - 36)
+        block = pygame.Rect(inner.x + 12, inner.y + 60, inner.width - 24, block_h)
+        pygame.draw.rect(self.screen, (18,26,40), block, border_radius=10)
+        title = self.small_font.render('Neural Network Activations', True, WHITE)
+        self.screen.blit(title, (block.x + 12, block.y + 10))
+
+        # Draw layers as columns with nodes and faint connections
         if self.last_activations is not None:
-            acts = self.last_activations
-            # Draw nodes horizontally by layer
-            layers = [a for a in acts]
-            n_layers = len(layers)
-            viz_x = BOARD_SIZE + 3*MARGIN
-            viz_y = 120
-            layer_spacing = 80
-            node_radius = 8
+            # animation alpha
+            elapsed = time.time() - self.viz_anim_start
+            alpha = self._ease(min(1.0, elapsed / self.viz_anim_duration))
+            layers = self._interp_layers(self.prev_activations, self.last_activations, alpha)
+
+            # layout (even more compact)
+            col_count = len(layers)
+            col_spacing = max(48, int((block.width - 40) / max(1, col_count-1)))
+            start_x = block.x + 14
+            # start_y remonté pour afficher les activations un peu plus haut dans le bloc
+            start_y = block.y + 24
+            # very small node radius for compact display
+            node_radius = max(3, int(CELL_SIZE * 0.03))
+            max_nodes = max(len(np.array(a).reshape(-1)) for a in layers)
+            # tighter vertical spacing
+            vertical_spacing = max(10, int((block.height - 50) / max(1, max_nodes)))
+
+            # precompute positions
+            positions = []
             for li, layer in enumerate(layers):
-                arr = layer.reshape(-1)
+                arr = np.array(layer).reshape(-1)
                 n = len(arr)
+                lx = start_x + li*col_spacing
+                ly0 = start_y
+                # center vertically
+                total_h = (n-1)*vertical_spacing
+                ly_start = ly0 + (max_nodes*vertical_spacing - total_h)/2
+                pos_layer = []
+                for ni in range(n):
+                    ly = int(ly_start + ni*vertical_spacing)
+                    pos_layer.append((int(lx), ly))
+                positions.append(pos_layer)
+
+            # connections
+            for li in range(col_count-1):
+                left = positions[li]
+                right = positions[li+1]
+                # faint bundle lines
+                for p in left:
+                    for q in right:
+                        pygame.draw.line(self.screen, (26,38,56), p, q, 1)
+
+            # nodes colored by activation
+            for li, layer in enumerate(layers):
+                arr = np.array(layer).reshape(-1)
                 for ni, val in enumerate(arr):
-                    # position
-                    lx = viz_x + li*layer_spacing
-                    ly = viz_y + ni*(node_radius*3)
-                    # normalize value for color
                     v = float(val)
-                    # clamp
                     v = max(min(v, 5.0), -5.0)
-                    intensity = int(255 * ( (v + 5) / 10 ))
-                    color = (255-intensity, intensity, 120)
-                    pygame.draw.circle(self.screen, color, (int(lx), int(ly)), node_radius)
+                    # map -5..5 to hue-like green/blue
+                    intensity = (v + 5.0) / 10.0
+                    r = int(40 + 20*(1-intensity))
+                    g = int(160 + 80*intensity)
+                    b = int(220 - 80*intensity)
+                    color = (r, g, b)
+                    pygame.draw.circle(self.screen, color, positions[li][ni], node_radius)
+                    pygame.draw.circle(self.screen, (12,18,28), positions[li][ni], node_radius, 2)
+
+        # Probabilities block (smaller, placed under the activations block)
+        probs_block = pygame.Rect(inner.x + 12, block.bottom + 12, inner.width - 24, probs_h - 6)
+        pygame.draw.rect(self.screen, (18,26,40), probs_block, border_radius=10)
+        ptitle = self.small_font.render('Predicted Move Probabilities', True, WHITE)
+        self.screen.blit(ptitle, (probs_block.x + 12, probs_block.y + 8))
+        self._draw_probabilities(probs_block)
 
     def draw_board(self):
         base_x = MARGIN
@@ -483,6 +574,15 @@ class GameUI:
             elif self.board[i] == AI:
                 txt = self.large_font.render('O', True, SUCCESS)
                 self.screen.blit(txt, (cx + CELL_SIZE/2 - txt.get_width()/2, cy + CELL_SIZE/2 - txt.get_height()/2))
+
+        # Draw control hints under the board (bottom-left) so they are not hidden by the panel
+        hints = 'R: reset   T: train NN   Q: quit   M: Minimax   N: NN   P: toggle backend'
+        hint_surf = self.small_font.render(hints, True, MUTED)
+        hint_x = MARGIN
+        # prefer to place directly below the board, but clamp so it stays inside the window
+        preferred_y = MARGIN + BOARD_SIZE + 12
+        hint_y = min(preferred_y, HEIGHT - MARGIN - hint_surf.get_height() - 6)
+        self.screen.blit(hint_surf, (hint_x, hint_y))
 
     def human_move_at(self, pos):
         if self.is_game_over: return
@@ -518,9 +618,12 @@ class GameUI:
             # mask illegal moves
             mask = np.array([ -1e6 if self.board[i] != ' ' else 0 for i in range(9)])
             logits = logits + mask
+            # store for animated viz
+            self.prev_activations = self.last_activations
             self.last_logits = logits
             self.last_activations = [a.reshape(-1) for a in activations]
-            # visual step-by-step: we will wait a bit to show activation
+            self.viz_anim_start = time.time()
+            # visual step-by-step: brief pause to let animation show
             time.sleep(0.25)
             mv = int(np.argmax(logits))
             if self.board[mv] != ' ':
