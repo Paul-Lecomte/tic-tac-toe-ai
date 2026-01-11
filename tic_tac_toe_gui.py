@@ -69,6 +69,34 @@ MUTED = (148,163,184)
 WHITE = (230,238,248)
 HIGHLIGHT = (80,200,180)
 
+# UI theme centralisé pour réglages rapides
+UI_THEME = {
+    'bg': BG,
+    'panel': PANEL,
+    'panel_inner': (8,12,18),
+    'panel_block': (18,26,40),
+    'accent': ACCENT,
+    'success': SUCCESS,
+    'warning': (234,179,8),
+    'error': (239,68,68),
+    'muted': (168,178,194),  # un peu plus contrasté
+    'text': WHITE,
+    'chip_bg': (45,60,88),
+    'chip_active_bg': (36,99,235),
+    'chip_text': WHITE,
+    'disabled': (90,90,90),
+    'hover': (52,77,110),
+    'grid_line': MUTED,
+    'node_stroke': (12,18,28),
+    'connection': (26,38,56),
+    'bar_bg': (32,48,72),
+    'bar_fill': ACCENT,
+    'bar_illegal': (85,85,95),
+    'radius': 12,
+    'chip_h': 26,
+    'chip_pad': 10,
+}
+
 # ----------------------------
 # Minimax (same logic as console)
 # ----------------------------
@@ -319,12 +347,10 @@ class GameUI:
         pygame.display.set_caption('Tic-Tac-Toe AI (Minimax + NN Viz)')
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         self.clock = pygame.time.Clock()
-        # fonts tuned smaller so UI fits in 720p
-        self.font = pygame.font.SysFont('Arial', 14)
-        # very small font for compact labels/titles
-        self.small_font = pygame.font.SysFont('Arial', 10)
-        # large font scaled down so X/O are not overwhelming
-        self.large_font = pygame.font.SysFont('Arial', max(36, int(CELL_SIZE * 0.45)), bold=True)
+        # polices harmonisées et contrastées
+        self.font = pygame.font.SysFont('Segoe UI', 16)
+        self.small_font = pygame.font.SysFont('Segoe UI', 12)
+        self.large_font = pygame.font.SysFont('Segoe UI', max(36, int(CELL_SIZE * 0.45)), bold=True)
 
         self.board = [' '] * 9
         self.current = HUMAN
@@ -352,6 +378,12 @@ class GameUI:
         self.prev_activations = None
         self.viz_anim_start = 0.0
         self.viz_anim_duration = 0.4  # seconds
+        # Toasts simples
+        self.toasts = []  # list of (message, color, expire_time)
+
+    def _push_toast(self, message, color=None, duration=1.8):
+        color = color or UI_THEME['accent']
+        self.toasts.append((message, color, time.time() + duration))
 
     def switch_backend(self, backend):
         """Switch net backend to 'numpy' or 'torch' (if available)."""
@@ -362,19 +394,24 @@ class GameUI:
         if backend == 'torch':
             if not USE_TORCH:
                 print('PyTorch is not installed. Install torch to use this backend.')
+                self._push_toast('PyTorch non dispo', UI_THEME['warning'])
                 return
             try:
                 self.net = PyTorchNet()
                 self.net_backend = 'torch'
                 print('Switched backend to PyTorch')
+                self._push_toast('Backend: PyTorch', UI_THEME['success'])
             except Exception as e:
                 print('Failed to initialize PyTorch backend:', e)
+                self._push_toast('Erreur backend torch', UI_THEME['error'])
         elif backend == 'numpy':
             self.net = NumpyNet()
             self.net_backend = 'numpy'
             print('Switched backend to Numpy')
+            self._push_toast('Backend: Numpy', UI_THEME['success'])
         else:
             print('Unknown backend:', backend)
+            self._push_toast('Backend inconnu', UI_THEME['warning'])
 
     def reset(self):
         self.board = [' '] * 9
@@ -386,29 +423,58 @@ class GameUI:
         self.prev_activations = None
         self.last_logits = None
         self.viz_anim_start = 0.0
+        self._push_toast('Réinitialisé', UI_THEME['accent'])
 
     def _draw_panel_header(self, panel_rect):
-        # Status
-        status = 'Tour: Vous (X)' if self.current == HUMAN and not self.is_game_over else ('IA pense...' if self.current==AI and not self.is_game_over else 'Fin')
+        # Status avec badge
+        dots = '.' * int((time.time()*2) % 3 + 1)
+        status = 'Tour: Vous (X)'
         if self.is_game_over:
-            if self.winner == 'draw': status = 'Match nul'
-            elif self.winner == HUMAN: status = 'Vous avez gagné'
-            else: status = 'IA a gagné'
-        title = self.font.render('Tic-Tac-Toe AI', True, WHITE)
+            if self.winner == 'draw':
+                status = 'Match nul'
+                badge_color = UI_THEME['muted']
+            elif self.winner == HUMAN:
+                status = 'Vous avez gagné'
+                badge_color = UI_THEME['success']
+            else:
+                status = 'IA a gagné'
+                badge_color = UI_THEME['error']
+        else:
+            if self.current == AI:
+                status = f'IA pense{dots}'
+                badge_color = UI_THEME['accent']
+            else:
+                badge_color = UI_THEME['success']
+        title = self.font.render('Tic-Tac-Toe AI', True, UI_THEME['text'])
         self.screen.blit(title, (panel_rect.x + 16, panel_rect.y + 12))
-        text = self.font.render(status, True, WHITE)
-        self.screen.blit(text, (panel_rect.x + 16, panel_rect.y + 36))
-        # Mode & backend rows as chips
-        chip_h = 24
-        chip_pad = 8
-        def draw_chip(text_s, x, y, color=(45,60,88)):
-            surf = self.font.render(text_s, True, WHITE)
-            rect = pygame.Rect(x, y, surf.get_width()+16, chip_h)
-            pygame.draw.rect(self.screen, color, rect, border_radius=12)
-            self.screen.blit(surf, (rect.x+8, rect.y+chip_h/2 - surf.get_height()/2))
-            return rect.right
-        right = draw_chip(f'Mode: {self.ai_mode} (M/N)', panel_rect.x + 16, panel_rect.y + 64)
-        draw_chip(f'Backend: {self.net_backend} (P)', right + chip_pad, panel_rect.y + 64)
+        # badge
+        surf = self.font.render(status, True, (255,255,255))
+        badge = pygame.Rect(panel_rect.x + 16, panel_rect.y + 36, surf.get_width()+18, UI_THEME['chip_h'])
+        pygame.draw.rect(self.screen, badge_color, badge, border_radius=UI_THEME['radius'])
+        self.screen.blit(surf, (badge.x+9, badge.y + UI_THEME['chip_h']/2 - surf.get_height()/2))
+        # Chips Mode/Backend
+        chip_h = UI_THEME['chip_h']
+        chip_pad = UI_THEME['chip_pad']
+        def draw_chip(text_s, x, y, active=False):
+            color = UI_THEME['chip_active_bg'] if active else UI_THEME['chip_bg']
+            surf = self.font.render(text_s, True, UI_THEME['chip_text'])
+            rect = pygame.Rect(x, y, surf.get_width()+18, chip_h)
+            pygame.draw.rect(self.screen, color, rect, border_radius=UI_THEME['radius'])
+            self.screen.blit(surf, (rect.x+9, rect.y+chip_h/2 - surf.get_height()/2))
+            return rect
+        right_chip = draw_chip(f"Mode: {self.ai_mode} (M/N)", panel_rect.x + 16, panel_rect.y + 64, active=True)
+        backend_chip = draw_chip(f"Backend: {self.net_backend} (P)", right_chip.right + chip_pad, panel_rect.y + 64, active=False)
+        # tooltips simples au survol
+        mx, my = pygame.mouse.get_pos()
+        for chip_rect, tip in [
+            (right_chip, 'Basculer minimax/NN'),
+            (backend_chip, 'Changer backend numpy/torch')
+        ]:
+            if chip_rect.collidepoint(mx, my):
+                tip_surf = self.small_font.render(tip, True, UI_THEME['text'])
+                tip_bg = pygame.Rect(mx+12, my+12, tip_surf.get_width()+10, tip_surf.get_height()+6)
+                pygame.draw.rect(self.screen, UI_THEME['panel_block'], tip_bg, border_radius=8)
+                self.screen.blit(tip_surf, (tip_bg.x+5, tip_bg.y+3))
 
     def _ease(self, t):
         # smooth cubic ease-in-out
@@ -433,77 +499,70 @@ class GameUI:
         logits = np.array(self.last_logits).reshape(-1)
         exps = np.exp(logits - np.max(logits))
         probs = (exps / np.sum(exps))
-        # Draw as grouped rows with bars (compact for 720p)
+        # Draw as grouped rows with bars
         base_x = panel_rect.x + 10
-        # Position probabilities block starting below its title area (keep responsive)
         base_y = panel_rect.y + 34
         bar_w = panel_rect.width - 32
         bar_h = 12
-        gap = 5
+        gap = 6
         for i in range(9):
             r = i // 3
             c = i % 3
-            # use small font for probability labels to reduce clutter
-            label = self.small_font.render(f'Cell {r+1},{c+1}', True, MUTED)
+            label = self.small_font.render(f'R{r+1}C{c+1}', True, UI_THEME['muted'])
             y = base_y + i*(bar_h+gap)
             self.screen.blit(label, (base_x, y))
-            # bar background
-            bar_rect = pygame.Rect(base_x + 90, y, bar_w - 120, bar_h)
-            pygame.draw.rect(self.screen, (32,48,72), bar_rect, border_radius=6)
-            # bar fill with gradient-like two-tone
+            bar_rect = pygame.Rect(base_x + 70, y, bar_w - 100, bar_h)
+            pygame.draw.rect(self.screen, UI_THEME['bar_bg'], bar_rect, border_radius=6)
             p = float(probs[i])
             fill_w = int((bar_rect.width) * p)
+            is_legal = (self.board[i] == ' ')
+            fill_color = (UI_THEME['bar_fill'] if is_legal else UI_THEME['bar_illegal'])
             fill_rect = pygame.Rect(bar_rect.x, bar_rect.y, fill_w, bar_h)
-            color = (59,130,246) if self.board[i] == ' ' else (90,90,90)
-            pygame.draw.rect(self.screen, color, fill_rect, border_radius=6)
-            val = self.small_font.render(f'{p:.2f}', True, WHITE)
+            pygame.draw.rect(self.screen, fill_color, fill_rect, border_radius=6)
+            # hachures si illégal
+            if not is_legal:
+                for hx in range(bar_rect.x, bar_rect.right, 6):
+                    pygame.draw.line(self.screen, (60,60,70), (hx, bar_rect.y), (hx-4, bar_rect.bottom), 1)
+            val = self.small_font.render(f'{p:.2f}', True, UI_THEME['text'])
             self.screen.blit(val, (bar_rect.right - val.get_width() - 6, y))
+            # seuil visuel > 0.5
+            if p >= 0.5 and is_legal:
+                pygame.draw.rect(self.screen, UI_THEME['success'], (bar_rect.right-4, y-2, 4, bar_h+4), border_radius=2)
 
     def draw_panel(self):
         panel_rect = pygame.Rect(BOARD_SIZE + 2*MARGIN, MARGIN, WIDTH - BOARD_SIZE - 3*MARGIN, HEIGHT - 2*MARGIN)
-        # panel background layers for subtle depth
-        pygame.draw.rect(self.screen, (8,12,18), panel_rect, border_radius=12)
+        pygame.draw.rect(self.screen, UI_THEME['panel_inner'], panel_rect, border_radius=UI_THEME['radius'])
         inner = panel_rect.inflate(-8, -8)
-        pygame.draw.rect(self.screen, PANEL, inner, border_radius=12)
+        pygame.draw.rect(self.screen, UI_THEME['panel'], inner, border_radius=UI_THEME['radius'])
 
         self._draw_panel_header(inner)
 
-        # Allocate more height to neural network activations and less to probabilities.
-        # Keep sensible clamps so the UI remains stable at 720p.
-        probs_h = max(90, int(inner.height * 0.22))
-        block_h = max(160, inner.height - probs_h - 36)
+        # layout
+        probs_h = max(100, int(inner.height * 0.24))
+        block_h = max(170, inner.height - probs_h - 44)
         block = pygame.Rect(inner.x + 12, inner.y + 60, inner.width - 24, block_h)
-        pygame.draw.rect(self.screen, (18,26,40), block, border_radius=10)
-        title = self.small_font.render('Neural Network Activations', True, WHITE)
+        pygame.draw.rect(self.screen, UI_THEME['panel_block'], block, border_radius=10)
+        title = self.small_font.render('Neural Network Activations', True, UI_THEME['text'])
         self.screen.blit(title, (block.x + 12, block.y + 10))
 
-        # Draw layers as columns with nodes and faint connections
+        # Draw layers
         if self.last_activations is not None:
-            # animation alpha
             elapsed = time.time() - self.viz_anim_start
             alpha = self._ease(min(1.0, elapsed / self.viz_anim_duration))
             layers = self._interp_layers(self.prev_activations, self.last_activations, alpha)
-
-            # layout (even more compact)
             col_count = len(layers)
-            col_spacing = max(48, int((block.width - 40) / max(1, col_count-1)))
+            col_spacing = max(52, int((block.width - 40) / max(1, col_count-1)))
             start_x = block.x + 14
-            # start_y remonté pour afficher les activations un peu plus haut dans le bloc
             start_y = block.y + 24
-            # very small node radius for compact display
             node_radius = max(3, int(CELL_SIZE * 0.03))
             max_nodes = max(len(np.array(a).reshape(-1)) for a in layers)
-            # tighter vertical spacing
             vertical_spacing = max(10, int((block.height - 50) / max(1, max_nodes)))
-
-            # precompute positions
             positions = []
             for li, layer in enumerate(layers):
                 arr = np.array(layer).reshape(-1)
                 n = len(arr)
                 lx = start_x + li*col_spacing
                 ly0 = start_y
-                # center vertically
                 total_h = (n-1)*vertical_spacing
                 ly_start = ly0 + (max_nodes*vertical_spacing - total_h)/2
                 pos_layer = []
@@ -511,50 +570,63 @@ class GameUI:
                     ly = int(ly_start + ni*vertical_spacing)
                     pos_layer.append((int(lx), ly))
                 positions.append(pos_layer)
-
-            # connections
+            # connections atténuées
             for li in range(col_count-1):
                 left = positions[li]
                 right = positions[li+1]
-                # faint bundle lines
                 for p in left:
                     for q in right:
-                        pygame.draw.line(self.screen, (26,38,56), p, q, 1)
-
-            # nodes colored by activation
+                        pygame.draw.line(self.screen, UI_THEME['connection'], p, q, 1)
+            # nodes colorés
             for li, layer in enumerate(layers):
                 arr = np.array(layer).reshape(-1)
                 for ni, val in enumerate(arr):
                     v = float(val)
                     v = max(min(v, 5.0), -5.0)
-                    # map -5..5 to hue-like green/blue
                     intensity = (v + 5.0) / 10.0
                     r = int(40 + 20*(1-intensity))
                     g = int(160 + 80*intensity)
                     b = int(220 - 80*intensity)
                     color = (r, g, b)
                     pygame.draw.circle(self.screen, color, positions[li][ni], node_radius)
-                    pygame.draw.circle(self.screen, (12,18,28), positions[li][ni], node_radius, 2)
+                    pygame.draw.circle(self.screen, UI_THEME['node_stroke'], positions[li][ni], node_radius, 2)
 
-        # Probabilities block (smaller, placed under the activations block)
+        # Probabilities block
         probs_block = pygame.Rect(inner.x + 12, block.bottom + 12, inner.width - 24, probs_h - 6)
-        pygame.draw.rect(self.screen, (18,26,40), probs_block, border_radius=10)
-        ptitle = self.small_font.render('Predicted Move Probabilities', True, WHITE)
+        pygame.draw.rect(self.screen, UI_THEME['panel_block'], probs_block, border_radius=10)
+        ptitle = self.small_font.render('Predicted Move Probabilities', True, UI_THEME['text'])
         self.screen.blit(ptitle, (probs_block.x + 12, probs_block.y + 8))
         self._draw_probabilities(probs_block)
+
+        # render toasts (coin supérieur droit du panel)
+        now = time.time()
+        self.toasts = [t for t in self.toasts if t[2] > now]
+        ty = inner.y + 6
+        for msg, color, exp in self.toasts:
+            tsurf = self.small_font.render(msg, True, (255,255,255))
+            trect = pygame.Rect(inner.right - tsurf.get_width() - 24, ty, tsurf.get_width()+16, tsurf.get_height()+8)
+            pygame.draw.rect(self.screen, color, trect, border_radius=8)
+            self.screen.blit(tsurf, (trect.x+8, trect.y+4))
+            ty += trect.height + 6
 
     def draw_board(self):
         base_x = MARGIN
         base_y = MARGIN
-        # board bg
         board_rect = pygame.Rect(base_x, base_y, BOARD_SIZE, BOARD_SIZE)
-        pygame.draw.rect(self.screen, BG, board_rect, border_radius=8)
+        pygame.draw.rect(self.screen, UI_THEME['bg'], board_rect, border_radius=8)
         # grid lines
         for i in range(1,3):
             x = base_x + i*CELL_SIZE
-            pygame.draw.line(self.screen, MUTED, (x, base_y+8), (x, base_y+BOARD_SIZE-8), 2)
+            pygame.draw.line(self.screen, UI_THEME['grid_line'], (x, base_y+8), (x, base_y+BOARD_SIZE-8), 2)
             y = base_y + i*CELL_SIZE
-            pygame.draw.line(self.screen, MUTED, (base_x+8, y), (base_x+BOARD_SIZE-8, y), 2)
+            pygame.draw.line(self.screen, UI_THEME['grid_line'], (base_x+8, y), (base_x+BOARD_SIZE-8, y), 2)
+        # hover cell
+        mx, my = pygame.mouse.get_pos()
+        hover_idx = None
+        if MARGIN <= mx <= MARGIN + BOARD_SIZE and MARGIN <= my <= MARGIN + BOARD_SIZE:
+            col = (mx - MARGIN) // CELL_SIZE
+            row = (my - MARGIN) // CELL_SIZE
+            hover_idx = int(row*3 + col)
         # cells
         for i in range(9):
             r = i // 3
@@ -566,23 +638,29 @@ class GameUI:
             if self.winning_combo and i in self.winning_combo:
                 pygame.draw.rect(self.screen, HIGHLIGHT, rect, border_radius=8)
             else:
-                pygame.draw.rect(self.screen, PANEL, rect, border_radius=8)
+                pygame.draw.rect(self.screen, UI_THEME['panel'], rect, border_radius=8)
+            # hover accent si libre
+            if hover_idx == i and self.board[i] == ' ' and not self.is_game_over and self.current == HUMAN:
+                pygame.draw.rect(self.screen, UI_THEME['hover'], rect, 2, border_radius=8)
             # draw X/O
             if self.board[i] == HUMAN:
-                txt = self.large_font.render('X', True, ACCENT)
+                txt = self.large_font.render('X', True, UI_THEME['accent'])
                 self.screen.blit(txt, (cx + CELL_SIZE/2 - txt.get_width()/2, cy + CELL_SIZE/2 - txt.get_height()/2))
             elif self.board[i] == AI:
-                txt = self.large_font.render('O', True, SUCCESS)
+                txt = self.large_font.render('O', True, UI_THEME['success'])
                 self.screen.blit(txt, (cx + CELL_SIZE/2 - txt.get_width()/2, cy + CELL_SIZE/2 - txt.get_height()/2))
 
-        # Draw control hints under the board (bottom-left) so they are not hidden by the panel
-        hints = 'R: reset   T: train NN   Q: quit   M: Minimax   N: NN   P: toggle backend'
-        hint_surf = self.small_font.render(hints, True, MUTED)
+        # Hints en 2 lignes
+        hint1 = 'R: reset   T: train NN   Q: quit'
+        hint2 = 'M: Minimax   N: NN   P: toggle backend'
+        h1 = self.small_font.render(hint1, True, UI_THEME['muted'])
+        h2 = self.small_font.render(hint2, True, UI_THEME['muted'])
         hint_x = MARGIN
-        # prefer to place directly below the board, but clamp so it stays inside the window
-        preferred_y = MARGIN + BOARD_SIZE + 12
-        hint_y = min(preferred_y, HEIGHT - MARGIN - hint_surf.get_height() - 6)
-        self.screen.blit(hint_surf, (hint_x, hint_y))
+        preferred_y = MARGIN + BOARD_SIZE + 8
+        y1 = min(preferred_y, HEIGHT - MARGIN - h1.get_height() - h2.get_height() - 10)
+        y2 = y1 + h1.get_height() + 4
+        self.screen.blit(h1, (hint_x, y1))
+        self.screen.blit(h2, (hint_x, y2))
 
     def human_move_at(self, pos):
         if self.is_game_over: return
@@ -593,8 +671,12 @@ class GameUI:
             self.is_game_over = True
             self.winner = winner
             self.winning_combo = combo
+            self._push_toast('Fin de partie', UI_THEME['accent'])
             return
         self.current = AI
+        # Si le mode NN est actif, on met à jour la viz juste après le coup humain
+        if self.ai_mode == 'nn':
+            self.update_nn_viz(force=True)
 
     def ai_move(self):
         if self.ai_mode == 'minimax':
@@ -608,22 +690,19 @@ class GameUI:
                 self.is_game_over = True
                 self.winner = winner
                 self.winning_combo = combo
+                self._push_toast('Fin de partie', UI_THEME['accent'])
             else:
                 self.current = HUMAN
             return
         elif self.ai_mode == 'nn':
-            # prepare input and forward
             x = board_to_input(self.board)
             logits, activations = self.net.predict(x)
-            # mask illegal moves
             mask = np.array([ -1e6 if self.board[i] != ' ' else 0 for i in range(9)])
             logits = logits + mask
-            # store for animated viz
             self.prev_activations = self.last_activations
             self.last_logits = logits
             self.last_activations = [a.reshape(-1) for a in activations]
             self.viz_anim_start = time.time()
-            # visual step-by-step: brief pause to let animation show
             time.sleep(0.25)
             mv = int(np.argmax(logits))
             if self.board[mv] != ' ':
@@ -634,6 +713,7 @@ class GameUI:
                 self.is_game_over = True
                 self.winner = winner
                 self.winning_combo = combo
+                self._push_toast('Fin de partie', UI_THEME['accent'])
             else:
                 self.current = HUMAN
             return
@@ -642,8 +722,35 @@ class GameUI:
         print('Génération dataset...')
         X, Y = generate_dataset(samples)
         print('Entraînement rapide du réseau...')
+        self._push_toast('Entraînement...', UI_THEME['accent'])
         self.net.train_supervised(X, Y, epochs=epochs, lr=0.01, batch=32)
+        self._push_toast('Entraînement terminé', UI_THEME['success'])
         print('Entraînement terminé.')
+
+    def update_nn_viz(self, force=False):
+        """Met à jour last_activations/last_logits pour la visualisation NN.
+        Appelée en continu quand le mode NN est actif, et forcée après un coup humain.
+        """
+        if self.ai_mode != 'nn':
+            return
+        # si la partie est finie, ne pas mettre à jour
+        if self.is_game_over:
+            return
+        x = board_to_input(self.board)
+        try:
+            logits, activations = self.net.predict(x)
+        except Exception:
+            return
+        # masque des coups illégaux pour les logits
+        mask = np.array([ -1e6 if self.board[i] != ' ' else 0 for i in range(9)])
+        new_logits = logits + mask
+        # détection de changement significatif ou forcé
+        changed = force or (self.last_logits is None) or (np.any(np.abs(np.array(self.last_logits) - np.array(new_logits)) > 1e-6))
+        if changed:
+            self.prev_activations = self.last_activations
+            self.last_logits = new_logits
+            self.last_activations = [a.reshape(-1) for a in activations]
+            self.viz_anim_start = time.time()
 
     def run(self):
         running = True
@@ -659,14 +766,14 @@ class GameUI:
                         self.reset()
                     elif event.key == pygame.K_m:
                         self.ai_mode = 'minimax'
+                        self._push_toast('Mode: minimax', UI_THEME['success'])
                     elif event.key == pygame.K_n:
                         self.ai_mode = 'nn'
+                        self._push_toast('Mode: NN', UI_THEME['success'])
                     elif event.key == pygame.K_p:
-                        # toggle backend between numpy and torch
                         target = 'torch' if self.net_backend == 'numpy' else 'numpy'
                         self.switch_backend(target)
                     elif event.key == pygame.K_t:
-                        # train quickly
                         self.train_nn_quick(samples=300, epochs=400)
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = pygame.mouse.get_pos()
@@ -680,10 +787,17 @@ class GameUI:
             if not self.is_game_over and self.current == AI:
                 self.ai_move()
 
+            # Mise à jour continue de la viz NN si actif et tour du joueur
+            if not self.is_game_over and self.ai_mode == 'nn' and self.current == HUMAN:
+                self.update_nn_viz()
+
             # Draw
-            self.screen.fill(BG)
+            self.screen.fill(UI_THEME['bg'])
             self.draw_board()
             self.draw_panel()
+            # FPS discret (coin bas droit)
+            fps_text = self.small_font.render(f"{int(self.clock.get_fps())} FPS", True, UI_THEME['muted'])
+            self.screen.blit(fps_text, (WIDTH - fps_text.get_width() - MARGIN, HEIGHT - fps_text.get_height() - MARGIN))
             pygame.display.flip()
 
         pygame.quit()
